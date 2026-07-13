@@ -1,0 +1,283 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+
+// ---------- QR CODES (FROM SQL SCRIPT) ----------
+
+model QrCode {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  shortCode   String   @unique @map("short_code")
+  title       String
+  description String?
+  phone       String?
+  email       String?
+  website     String?
+  address     String?
+  notes       String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  scans       QrScan[]
+
+  @@index([userId], map: "qr_codes_user_id_idx")
+  @@index([shortCode], map: "qr_codes_short_code_idx")
+  @@map("qr_codes")
+}
+
+// ---------- QR SCANS (FROM SQL SCRIPT) ----------
+model QrScan {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  qrCodeId  String   @map("qr_code_id") @db.Uuid
+  qrCode    QrCode   @relation(fields: [qrCodeId], references: [id], onDelete: Cascade)
+  scannedAt DateTime @default(now()) @map("scanned_at") @db.Timestamptz(6)
+  ip        String?
+  userAgent String?  @map("user_agent")
+  referrer  String?
+
+  @@index([qrCodeId], map: "qr_scans_qr_code_id_idx")
+  @@index([scannedAt], map: "qr_scans_scanned_at_idx")
+  @@map("qr_scans")
+}
+
+// ---------- PLATFORM PLANS ----------
+model PlatformPlan {
+  id           String   @id @default(cuid())
+  name         String
+  priceMonthly Int? // in paise
+  maxFreeQrs   Int      @default(5)
+  features     Json?
+  vendors      Vendor[]
+}
+
+// ---------- VENDOR (TENANT) ----------
+model Vendor {
+  id               String               @id @default(cuid())
+  name             String
+  slug             String               @unique
+  logoUrl          String?
+  primaryColor     String?              @default("#3b82f6")
+  isActive         Boolean              @default(true)
+  planId           String
+  plan             PlatformPlan         @relation(fields: [planId], references: [id])
+  creditBalance    Int                  @default(0) // in paise
+  stripeCustomerId String?
+  users            VendorUser[]
+  profiles         Profile[]
+  orders           Order[]
+  transactions     PaymentTransaction[]
+  archivedAt       DateTime? // soft-delete: preserves orders/transactions for audit
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  @@index([planId])
+}
+
+// ---------- VENDOR USER ----------
+model VendorUser {
+  id           String               @id @default(cuid())
+  email        String               @unique
+  name         String?
+  role         Role                 @default(MEMBER)
+  vendorId     String
+  vendor       Vendor               @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  authUserId   String               @unique // Supabase Auth ID
+  contacts     Contact[]
+  profiles     Profile[]
+  orders       Order[]
+  transactions PaymentTransaction[]
+  createdAt    DateTime             @default(now())
+
+  @@index([vendorId])
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+// ---------- CONTACT ----------
+model Contact {
+  id       String     @id @default(cuid())
+  userId   String
+  user     VendorUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name     String
+  phone    String?
+  email    String?
+  profiles Profile[]
+
+  @@index([userId])
+}
+
+// ---------- PROFILE ----------
+model Profile {
+  id              String      @id @default(cuid())
+  slug            String      @unique
+  name            String
+  bloodGroup      String?
+  primaryMobile   String
+  secondaryMobile String?
+  social          Json? // { twitter, instagram }
+  vendorId        String
+  vendor          Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  createdById     String
+  creator         VendorUser  @relation(fields: [createdById], references: [id])
+  contactId       String?     @unique
+  contact         Contact?    @relation(fields: [contactId], references: [id])
+  notifyEmail     Boolean     @default(true)
+  notifySMS       Boolean     @default(false)
+  notifyPush      Boolean     @default(false)
+  isActive        Boolean     @default(true)
+  archivedAt      DateTime?
+  scans           ScanLog[]
+  orderItems      OrderItem[]
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([vendorId])
+  @@index([createdById])
+}
+
+// ---------- SCAN LOG ----------
+model ScanLog {
+  id        String   @id @default(cuid())
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  timestamp DateTime @default(now())
+  ip        String?
+  userAgent String?
+  location  String?
+  vendorId  String
+
+  @@index([profileId, timestamp])
+  @@index([vendorId, timestamp])
+}
+
+// ---------- PRINTER VENDOR ----------
+model PrinterVendor {
+  id             String    @id @default(cuid())
+  name           String
+  email          String    @unique
+  phone          String?
+  address        String?
+  latitude       Float?
+  longitude      Float?
+  capacity       Int       @default(100)
+  currentLoad    Int       @default(0)
+  isActive       Boolean   @default(true)
+  authUserId     String?   @unique
+  webhookUrl     String?
+  pricing        Json?
+  assignedOrders Order[]
+  createdAt      DateTime  @default(now())
+}
+
+// ---------- RESTORED: ORDER ----------
+model Order {
+  id                String               @id @default(cuid())
+  orderNumber       String               @unique
+  userId            String
+  user              VendorUser           @relation(fields: [userId], references: [id])
+  vendorId          String
+  vendor            Vendor               @relation(fields: [vendorId], references: [id])
+  totalAmount       Int // in paise
+  currency          String               @default("INR")
+  status            OrderStatus          @default(PENDING)
+  paymentStatus     PaymentStatus        @default(PENDING)
+  razorpayOrderId   String?              @unique
+  razorpayPaymentId String?              @unique
+  shippingName      String
+  shippingPhone     String
+  shippingAddress   String
+  shippingCity      String
+  shippingState     String
+  shippingPin       String
+  trackingNumber    String?
+  trackingUrl       String?
+  printerId         String?
+  printer           PrinterVendor?       @relation(fields: [printerId], references: [id])
+  printerStatus     PrinterStatus?
+  items             OrderItem[]
+  transactions      PaymentTransaction[]
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  paidAt            DateTime?
+  shippedAt         DateTime?
+  deliveredAt       DateTime?
+
+  @@index([vendorId, status])
+  @@index([userId])
+  @@index([printerId])
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  PROCESSING
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PrinterStatus {
+  PENDING
+  ACCEPTED
+  PRINTING
+  SHIPPED
+  DELIVERED
+  REJECTED
+}
+
+// ---------- RESTORED: ORDER ITEM ----------
+model OrderItem {
+  id           String  @id @default(cuid())
+  orderId      String
+  order        Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  profileId    String
+  profile      Profile @relation(fields: [profileId], references: [id])
+  quantity     Int     @default(1)
+  size         String
+  material     String?
+  pricePerUnit Int // in paise
+  subtotal     Int // in paise
+
+  @@index([orderId])
+  @@index([profileId])
+}
+
+// ---------- RESTORED: PAYMENT TRANSACTION ----------
+model PaymentTransaction {
+  id                String        @id @default(cuid())
+  orderId           String?
+  order             Order?        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  vendorId          String
+  vendor            Vendor        @relation(fields: [vendorId], references: [id])
+  userId            String
+  user              VendorUser    @relation(fields: [userId], references: [id])
+  razorpayOrderId   String?       @unique
+  razorpayPaymentId String?       @unique
+  razorpaySignature String?
+  amount            Int // in paise
+  currency          String        @default("INR")
+  status            PaymentStatus @default(PENDING)
+  description       String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([vendorId])
+  @@index([userId])
+  @@index([orderId])
+}
